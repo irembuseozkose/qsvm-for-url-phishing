@@ -1,0 +1,129 @@
+Environment Setup
+
+This project uses a Python virtual environment (venv) to keep dependencies isolated and reproducible.
+
+Prerequisites
+
+Make sure the following are installed on your system:
+
+Python 3.10 or 3.11
+
+pip
+
+Visual Studio Code
+
+VS Code Python extension
+
+VS Code Jupyter extension
+
+Note: Python 3.10 or 3.11 is recommended for better compatibility with scientific and quantum computing libraries.
+
+1. Create a virtual environment
+
+Open a terminal in the project root directory and run:
+
+Windows
+
+python -m venv .venv
+
+If you have multiple Python versions installed:
+
+py -3.11 -m venv .venv
+
+Linux / macOS
+
+python3 -m venv .venv
+
+2. Activate the virtual environment
+Windows PowerShell
+
+..venv\Scripts\Activate.ps1
+
+Windows Command Prompt
+
+.venv\Scripts\activate.bat
+
+Linux / macOS
+
+source .venv/bin/activate
+
+After activation, your terminal should show (.venv) at the beginning of the line.
+
+3. Upgrade pip
+
+python -m pip install --upgrade pip
+
+4. Install project dependencies
+
+Install all required packages from requirements.txt:
+
+pip install -r requirements.txt
+
+This will install all dependencies needed for the project in a single step.
+
+5. Register the environment as a Jupyter kernel
+
+To use this environment inside Jupyter notebooks, run:
+
+python -m ipykernel install --user --name=qsvm-phishing-venv --display-name "Python (.venv) - QSVM Phishing"
+
+6. Select the interpreter in VS Code
+
+In VS Code:
+
+Open the project folder
+
+Press Ctrl + Shift + P
+
+Search for Python: Select Interpreter
+
+Choose the interpreter inside .venv
+
+Typical paths are:
+
+Windows: .venv\Scripts\python.exe
+
+Linux/macOS: .venv/bin/python
+
+7. Select the notebook kernel
+
+When opening a notebook, choose:
+
+Python (.venv) - QSVM Phishing
+
+This ensures that all notebooks run with the correct environment and installed dependencies.
+
+8. Verify the installation
+
+You can test whether the environment is working correctly with:
+
+import sys
+print(sys.executable)
+
+The output should point to the Python executable inside the .venv folder.
+
+You can also test a few core packages:
+
+import numpy as np
+import pandas as pd
+import sklearn
+
+print("NumPy:", np.version)
+print("Pandas:", pd.version)
+print("Scikit-learn:", sklearn.version)
+
+9. Deactivate the environment
+
+When you are done working, you can deactivate the virtual environment with:
+
+deactivate
+
+Optional: PowerShell execution policy issue
+
+If PowerShell blocks script execution on Windows, run:
+
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+
+Then activate the environment again:
+
+..venv\Scripts\Activate.ps1
