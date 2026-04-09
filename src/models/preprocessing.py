@@ -1,7 +1,8 @@
 import os
+import re
 import numpy as np
 import pandas as pd
-from typing import Tuple, Iterator, Optional
+from typing import Tuple, Optional
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
@@ -22,12 +23,110 @@ def l2_normalize_rows(X: np.ndarray) -> np.ndarray:
 def load_raw_data(csv_path: str) -> pd.DataFrame:
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV not found: {csv_path}")
-
     df = pd.read_csv(csv_path, encoding="utf-8")
     if df.empty:
         raise ValueError("CSV is empty")
-
     return df
+
+
+# ================================================
+# URL LEXICAL FEATURE EXTRACTION
+# ================================================
+def extract_url_features(url: str) -> dict:
+    url = str(url).strip()
+
+    has_https    = int(url.startswith("https"))
+    has_http     = int(url.startswith("http"))
+    has_at       = int("@" in url)
+    has_ip       = int(bool(re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", url)))
+
+    url_len      = len(url)
+    dot_count    = url.count(".")
+    slash_count  = url.count("/")
+    dash_count   = url.count("-")
+    digit_count  = sum(c.isdigit() for c in url)
+    letter_count = sum(c.isalpha() for c in url)
+
+    suspicious_words = [
+        "login", "secure", "verify", "update", "bank",
+        "account", "confirm", "free", "click", "signin"
+    ]
+    has_suspicious = int(any(w in url.lower() for w in suspicious_words))
+
+    try:
+        domain  = url.split("/")[2] if "//" in url else url.split("/")[0]
+        tld     = domain.split(".")[-1]
+        tld_len = len(tld)
+    except Exception:
+        domain  = ""
+        tld_len = 0
+
+    try:
+        domain_parts    = domain.split(".")
+        subdomain_count = max(len(domain_parts) - 2, 0)
+    except Exception:
+        subdomain_count = 0
+
+    special_chars = sum(
+        1 for c in url if not c.isalnum() and c not in [".", "/", "-", "_"]
+    )
+    special_ratio = special_chars / max(url_len, 1)
+
+    return {
+        "url_len":         url_len,
+        "dot_count":       dot_count,
+        "slash_count":     slash_count,
+        "dash_count":      dash_count,
+        "digit_count":     digit_count,
+        "letter_count":    letter_count,
+        "has_https":       has_https,
+        "has_http":        has_http,
+        "has_at":          has_at,
+        "has_ip":          has_ip,
+        "has_suspicious":  has_suspicious,
+        "tld_len":         tld_len,
+        "subdomain_count": subdomain_count,
+        "special_ratio":   special_ratio,
+    }
+
+
+def build_url_feature_dataframe(df: pd.DataFrame, url_column: str = "url") -> pd.DataFrame:
+    if url_column not in df.columns:
+        raise ValueError(f"URL sütunu '{url_column}' bulunamadı.")
+
+    print("⏳ URL feature extraction çalışıyor...")
+
+    # Feature'ları çıkar
+    features_list = [extract_url_features(u) for u in df[url_column]]
+    df_features   = pd.DataFrame(features_list, index=df.index)  # ← index eşitle
+
+    # url_column dışındaki tüm sütunları doğrudan kopyala
+    extra_cols = [c for c in df.columns if c != url_column]
+    for col in extra_cols:
+        df_features[col] = df[col].values  # ← .values ile index sorununu geç
+
+    print(f"✅ Feature extraction tamamlandı: {df_features.shape}")
+    print(f"   Sütunlar: {df_features.columns.tolist()}")
+    return df_features
+
+
+# ================================================
+# STRATIFIED SAMPLER
+# ================================================
+def stratified_sample(
+    df: pd.DataFrame,
+    label_column: str,
+    n_per_class: int,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Her sınıftan en fazla n_per_class örnek alır."""
+    parts = []
+    for cls in df[label_column].unique():
+        group = df[df[label_column] == cls]
+        parts.append(
+            group.sample(n=min(n_per_class, len(group)), random_state=random_state)
+        )
+    return pd.concat(parts).reset_index(drop=True)
 
 
 # ================================================
@@ -43,36 +142,28 @@ def prepare_features_and_labels(
     if label_column not in df.columns:
         raise ValueError(f"Label column '{label_column}' not found in dataframe.")
 
-    # 0) ID kolonlarını otomatik sil
     id_candidates = ["id"]
     df = df.drop(columns=[c for c in id_candidates if c in df.columns], errors="ignore")
 
-    # 1) Labels
     label_series = df[label_column].astype(str)
 
-    # Manual mapping
     if positive_label is not None and negative_label is not None:
         mapping = {positive_label: 1, negative_label: 0}
         y = label_series.map(mapping)
-
         if y.isna().any():
             raise ValueError("Label mapping failed — check positive/negative labels.")
         y = y.values.astype(int)
-
-    else:  # Auto mapping for multi-class datasets
+    else:
         unique_vals = sorted(label_series.unique())
-        auto_map = {v: i for i, v in enumerate(unique_vals)}
+        auto_map    = {v: i for i, v in enumerate(unique_vals)}
+        print(f"ℹ️  Otomatik etiket haritası: {auto_map}")
         y = label_series.map(auto_map).values
 
-    # 2) Features
     feature_df = df.drop(columns=[label_column], errors="ignore")
     feature_df = feature_df.apply(pd.to_numeric, errors="coerce")
 
-    # Remove all-NaN columns
-    nan_cols = [c for c in feature_df.columns if feature_df[c].isna().all()]
+    nan_cols   = [c for c in feature_df.columns if feature_df[c].isna().all()]
     feature_df = feature_df.drop(columns=nan_cols, errors="ignore")
-
-    # Fill remaining NaNs
     feature_df = feature_df.fillna(feature_df.median(numeric_only=True))
 
     X = feature_df.values
@@ -80,9 +171,9 @@ def prepare_features_and_labels(
 
 
 # ================================================
-# PREPROCESSOR (Correct: PCA → Scaler → L2)
+# PREPROCESSOR  (StandardScaler → PCA → MinMax → L2)
 # ================================================
-class BreastCancerPreprocessor:
+class Preprocessor:
     def __init__(
         self,
         apply_minmax: bool = True,
@@ -90,43 +181,39 @@ class BreastCancerPreprocessor:
         apply_l2: bool = True,
         n_pca_components: Optional[int] = None,
     ):
-        self.apply_minmax = apply_minmax
-        self.apply_standard = apply_standard
-        self.apply_l2 = apply_l2
+        self.apply_minmax     = apply_minmax
+        self.apply_standard   = apply_standard
+        self.apply_l2         = apply_l2
         self.n_pca_components = n_pca_components
 
         self.std_scaler = None
-        self.mm_scaler = None
-        self.pca = None
+        self.mm_scaler  = None
+        self.pca        = None
 
     def fit(self, X: np.ndarray):
-        X_temp = X
+        X_temp = X.copy()
 
-        # 1️⃣ StandardScaler (ÖNCE)
         if self.apply_standard:
             self.std_scaler = StandardScaler()
             X_temp = self.std_scaler.fit_transform(X_temp)
 
-        # 2️⃣ PCA
         if self.n_pca_components is not None:
             self.pca = PCA(
                 n_components=self.n_pca_components,
                 whiten=True,
-                random_state=42
+                random_state=42,
             )
             X_temp = self.pca.fit_transform(X_temp)
 
-        # 3️⃣ MinMax (SONRA)
         if self.apply_minmax:
             self.mm_scaler = MinMaxScaler()
-            X_temp = self.mm_scaler.fit_transform(X_temp)
+            self.mm_scaler.fit(X_temp)
 
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        X_temp = X
+        X_temp = X.copy()
 
-        # Aynı sıra korunmalı
         if self.std_scaler is not None:
             X_temp = self.std_scaler.transform(X_temp)
 
@@ -146,7 +233,6 @@ class BreastCancerPreprocessor:
         return self.transform(X)
 
 
-
 # ================================================
 # TRAIN/TEST SPLIT
 # ================================================
@@ -157,14 +243,11 @@ def get_train_test_split(
     random_state: int = 42,
     stratify: bool = True,
 ):
-    stratify_arg = y if stratify else None
-
     return train_test_split(
-        X,
-        y,
+        X, y,
         test_size=test_size,
         random_state=random_state,
-        stratify=stratify_arg,
+        stratify=(y if stratify else None),
     )
 
 
@@ -177,14 +260,6 @@ def get_kfold_splits(
     n_splits: int = 5,
     random_state: int = 42,
 ):
-    skf = StratifiedKFold(
-        n_splits=n_splits, shuffle=True, random_state=random_state
-    )
-
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     for train_idx, test_idx in skf.split(X, y):
-        yield (
-            X[train_idx],
-            X[test_idx],
-            y[train_idx],
-            y[test_idx],
-        )
+        yield X[train_idx], X[test_idx], y[train_idx], y[test_idx]
