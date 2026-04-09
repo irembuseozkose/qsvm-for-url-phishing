@@ -2,7 +2,7 @@ from sklearn.svm import SVC
 import numpy as np
 
 class QSVM:
-    def __init__(self, quantum_kernel):
+    def __init__(self, quantum_kernel, C=1.0):
         self.kernel = quantum_kernel
         self.model = SVC(kernel="precomputed")
         self.X_train = None
