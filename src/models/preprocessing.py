@@ -5,7 +5,7 @@ import pandas as pd
 from typing import Tuple, Optional
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 
 
 # ================================================
@@ -32,29 +32,57 @@ def load_raw_data(csv_path: str) -> pd.DataFrame:
 # ================================================
 # URL LEXICAL FEATURE EXTRACTION
 # ================================================
+def _shannon_entropy(s: str) -> float:
+    """Verilen string'in Shannon entropisini hesaplar (bit cinsinden)."""
+    if not s:
+        return 0.0
+    from collections import Counter
+    counts = Counter(s)
+    total  = len(s)
+    return -sum((c / total) * np.log2(c / total) for c in counts.values())
+
+
 def extract_url_features(url: str) -> dict:
     url = str(url).strip()
 
-    has_https    = int(url.startswith("https"))
-    has_http     = int(url.startswith("http"))
-    has_at       = int("@" in url)
-    has_ip       = int(bool(re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", url)))
+    # ---- Temel binary bayraklar ----
+    has_https         = int(url.startswith("https"))
+    has_http          = int(url.startswith("http"))
+    has_at            = int("@" in url)
+    has_ip            = int(bool(re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", url)))
+    has_port          = int(bool(re.search(r":\d{2,5}(/|$)", url)))   # YENİ: :8080, :3000 vb.
+    has_encoded_chars = int("%" in url)                                # YENİ: %20, %3D vb.
 
+    # ---- Uzunluk ve karakter sayımı ----
     url_len      = len(url)
     dot_count    = url.count(".")
     slash_count  = url.count("/")
     dash_count   = url.count("-")
     digit_count  = sum(c.isdigit() for c in url)
     letter_count = sum(c.isalpha() for c in url)
+    digit_ratio  = digit_count / max(url_len, 1)                      # YENİ: uzunluktan bağımsız oran
 
+    # ---- Şüpheli kelime kontrolü (genişletilmiş) ----
     suspicious_words = [
-        "login", "secure", "verify", "update", "bank",
-        "account", "confirm", "free", "click", "signin"
+        # Kimlik avı (phishing)
+        "login", "signin", "sign-in", "logon", "verify", "validation",
+        "confirm", "authenticate", "credential", "password", "passwd",
+        # Finansal / aciliyet
+        "bank", "secure", "security", "account", "update", "upgrade",
+        "billing", "invoice", "payment", "paypal", "ebay", "amazon",
+        # Tıklama tuzakları
+        "free", "click", "prize", "winner", "lucky", "bonus", "offer",
+        # Kötü amaçlı yazılım / phishing
+        "malware", "virus", "hack", "crack", "keygen", "download",
+        "exe", "zip", "rar",
     ]
     has_suspicious = int(any(w in url.lower() for w in suspicious_words))
 
+    # ---- Alan adı ayrıştırma ----
     try:
         domain  = url.split("/")[2] if "//" in url else url.split("/")[0]
+        # Port varsa temizle
+        domain  = domain.split(":")[0]
         tld     = domain.split(".")[-1]
         tld_len = len(tld)
     except Exception:
@@ -64,29 +92,57 @@ def extract_url_features(url: str) -> dict:
     try:
         domain_parts    = domain.split(".")
         subdomain_count = max(len(domain_parts) - 2, 0)
+        domain_len      = len(domain)                                  # YENİ: alan adı uzunluğu
     except Exception:
         subdomain_count = 0
+        domain_len      = 0
 
+    # ---- Path ve sorgu ayrıştırma ----
+    try:
+        path_part   = url.split("?")[0]                                # sorgu öncesi kısım
+        query_part  = url.split("?")[1] if "?" in url else ""
+        path_depth  = max(path_part.count("/") - 2, 0)                # YENİ: path segmenti sayısı
+        query_len   = len(query_part)                                  # YENİ: sorgu parametresi uzunluğu
+    except Exception:
+        path_depth = 0
+        query_len  = 0
+
+    # ---- Özel karakter oranı ----
     special_chars = sum(
         1 for c in url if not c.isalnum() and c not in [".", "/", "-", "_"]
     )
     special_ratio = special_chars / max(url_len, 1)
 
+    # ---- Shannon entropisi ----
+    entropy = _shannon_entropy(url)                                    # YENİ: karakter düzeyi rastgelelik
+
     return {
+        # Uzunluk / sayım
         "url_len":         url_len,
         "dot_count":       dot_count,
         "slash_count":     slash_count,
         "dash_count":      dash_count,
         "digit_count":     digit_count,
         "letter_count":    letter_count,
+        "digit_ratio":     digit_ratio,       # YENİ
+        # Binary bayraklar
         "has_https":       has_https,
         "has_http":        has_http,
         "has_at":          has_at,
         "has_ip":          has_ip,
+        "has_port":        has_port,          # YENİ
+        "has_encoded_chars": has_encoded_chars,  # YENİ
         "has_suspicious":  has_suspicious,
+        # Alan adı
         "tld_len":         tld_len,
         "subdomain_count": subdomain_count,
+        "domain_len":      domain_len,        # YENİ
+        # Path / sorgu
+        "path_depth":      path_depth,        # YENİ
+        "query_len":       query_len,         # YENİ
+        # İstatistiksel
         "special_ratio":   special_ratio,
+        "entropy":         entropy,           # YENİ
     }
 
 
@@ -171,31 +227,25 @@ def prepare_features_and_labels(
 
 
 # ================================================
-# PREPROCESSOR  (StandardScaler → PCA → MinMax → L2)
+# PREPROCESSOR  (PCA → MinMax → L2)
 # ================================================
 class Preprocessor:
     def __init__(
         self,
         apply_minmax: bool = True,
-        apply_standard: bool = False,
         apply_l2: bool = True,
-        n_pca_components: Optional[int] = None,
+        n_pca_components: Optional[int | float] = None,
     ):
         self.apply_minmax     = apply_minmax
-        self.apply_standard   = apply_standard
         self.apply_l2         = apply_l2
+        # int → sabit bileşen sayısı, float → hedef varyans oranı (ör. 0.95)
         self.n_pca_components = n_pca_components
 
-        self.std_scaler = None
-        self.mm_scaler  = None
-        self.pca        = None
+        self.mm_scaler = None
+        self.pca       = None
 
     def fit(self, X: np.ndarray):
         X_temp = X.copy()
-
-        if self.apply_standard:
-            self.std_scaler = StandardScaler()
-            X_temp = self.std_scaler.fit_transform(X_temp)
 
         if self.n_pca_components is not None:
             self.pca = PCA(
@@ -213,9 +263,6 @@ class Preprocessor:
 
     def transform(self, X: np.ndarray) -> np.ndarray:
         X_temp = X.copy()
-
-        if self.std_scaler is not None:
-            X_temp = self.std_scaler.transform(X_temp)
 
         if self.pca is not None:
             X_temp = self.pca.transform(X_temp)
