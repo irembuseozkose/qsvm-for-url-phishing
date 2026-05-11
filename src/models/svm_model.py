@@ -5,7 +5,7 @@ import numpy as np
 
 class ClassicalSVM:
 
-    def __init__(self, C=1.0, kernel="rbf", gamma="scale"):
+    def __init__(self, C=1.0, kernel="linear", gamma="scale"):
         self.model = SVC(C=C, kernel=kernel, gamma=gamma)
 
     def fit(self, X_train, y_train):
